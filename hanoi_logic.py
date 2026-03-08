@@ -3,28 +3,31 @@ Tower of Hanoi game logic for micro:bit V2.
 
 No hardware dependencies - suitable for unit testing on PC.
 
-World layout:
-  - 15 columns wide, 3 pegs at world columns 2, 7, 12
-  - 5-wide view window, scroll range 0-10
-  - Blocks 1-4 have LED widths 1, 3, 5, 7
-  - 7-wide block overflow wraps to the row above
+World layout (dynamic per level):
+  - Peg 0 is always at world column 2 so it is centred on-screen at scroll 0.
+  - Peg separation = 2 * level  (widest block width 2*level-1, plus 1 gap).
+  - Pegs: col 2, col 2+sep, col 2+2*sep.
+  - Scroll range: 0 .. 4*level  (centres each peg at scroll 0 / sep / 2*sep).
+  - This keeps the world as compact as possible while accommodating the
+    widest block without overlap between adjacent pegs.
 
 Display rows:
   - Row 0: held block (always on-screen, blinks)
   - Rows 1-4: game area (sticks + stacked blocks)
+
+Block widths (LED pixels):
+  Block 1 → 1,  Block 2 → 3,  Block 3 → 5,  Block 4 → 7.
+  The 7-wide block overflows a 5-wide screen by 1 pixel on each side;
+  those overflow pixels wrap upward into the row above.
 """
 
 # Block number -> LED width mapping (index 0 unused)
 BLOCK_WIDTHS = [0, 1, 3, 5, 7]
 
-# World layout
-WORLD_WIDTH = 15
-PEG_COLS = [2, 7, 12]   # world column of each peg (left, middle, right)
 NUM_PEGS = 3
 SCREEN_WIDTH = 5
 SCREEN_HEIGHT = 5
-MAX_SCROLL = WORLD_WIDTH - SCREEN_WIDTH  # = 10
-SCREEN_CENTER_COL = SCREEN_WIDTH // 2   # = 2
+SCREEN_CENTER_COL = SCREEN_WIDTH // 2  # = 2
 
 # Display rows
 HELD_ROW = 0
@@ -37,6 +40,27 @@ BRIGHTNESS_STICK = 5
 BRIGHTNESS_HELD = 7
 
 
+def compute_layout(level):
+    """Compute the peg layout for the given level.
+
+    Returns (peg_cols, world_width, max_scroll) where:
+      peg_cols    – list of 3 world column indices [peg0, peg1, peg2]
+      world_width – total width of the game world in columns
+      max_scroll  – maximum scroll offset (centres peg2 on-screen)
+
+    Peg 0 is always at world column 2 so it is centred at scroll = 0.
+    Separation between adjacent pegs is 2 * level, which equals the
+    widest block width (2*level - 1) plus one column of gap.
+    """
+    sep = 2 * level
+    peg0 = SCREEN_CENTER_COL        # = 2
+    peg1 = peg0 + sep
+    peg2 = peg1 + sep
+    max_scroll = peg2 - SCREEN_CENTER_COL   # scroll that centres peg2
+    world_width = max_scroll + SCREEN_WIDTH
+    return [peg0, peg1, peg2], world_width, max_scroll
+
+
 class GameState:
     """Complete mutable game state for Tower of Hanoi."""
 
@@ -46,11 +70,14 @@ class GameState:
         self.held_block = None      # block number currently held, or None
         self.held_from_peg = None   # peg index the held block came from
         self.scroll = 0.0           # fractional horizontal scroll offset
+        self.peg_cols = [0, 0, 0]
+        self.max_scroll = 0
         self.setup_level()
 
     def setup_level(self):
         """Initialise blocks for the current level on the leftmost peg."""
         n = self.level
+        self.peg_cols, _, self.max_scroll = compute_layout(n)
         # Stack: index 0 = largest block (bottom), index -1 = smallest (top)
         self.pegs = [list(range(n, 0, -1)), [], []]
         self.held_block = None
@@ -66,9 +93,9 @@ class GameState:
         """Return index of the peg closest to the screen centre."""
         centre = self.scroll + SCREEN_CENTER_COL
         best_idx = 0
-        best_dist = abs(PEG_COLS[0] - centre)
+        best_dist = abs(self.peg_cols[0] - centre)
         for i in range(1, NUM_PEGS):
-            d = abs(PEG_COLS[i] - centre)
+            d = abs(self.peg_cols[i] - centre)
             if d < best_dist:
                 best_dist = d
                 best_idx = i
@@ -125,10 +152,10 @@ class GameState:
         Tilting right (accel_x > 0) scrolls left  (view offset decreases).
         Larger tilt magnitude scrolls faster.
         """
-        # At maximum tilt (1024), traverse the full scroll range (10 units) in 2 s.
+        # Fixed scale: at maximum tilt (1024), traverse ~10 world columns per 2 s.
         scale = 10.0 / (1024.0 * 2000.0)
         delta = -accel_x * scale * dt_ms
-        self.scroll = max(0.0, min(float(MAX_SCROLL), self.scroll + delta))
+        self.scroll = max(0.0, min(float(self.max_scroll), self.scroll + delta))
 
 
 # ---------------------------------------------------------------------------
@@ -151,7 +178,7 @@ def render_frame(game_state, stick_on=True, held_on=True):
 
     # Draw sticks (faded via blinking controlled by stick_on)
     if stick_on:
-        for peg_col in PEG_COLS:
+        for peg_col in game_state.peg_cols:
             sc = peg_col - scroll
             if 0 <= sc < SCREEN_WIDTH:
                 for row in range(PEG_ROW_TOP, SCREEN_HEIGHT):
@@ -159,7 +186,7 @@ def render_frame(game_state, stick_on=True, held_on=True):
 
     # Draw placed blocks (always lit, override stick pixels)
     for peg_idx in range(NUM_PEGS):
-        peg_col = PEG_COLS[peg_idx]
+        peg_col = game_state.peg_cols[peg_idx]
         stack = game_state.pegs[peg_idx]
         for depth, block_num in enumerate(stack):
             row = PEG_ROW_BOTTOM - depth

@@ -11,11 +11,11 @@ import os
 sys.path.insert(0, os.path.dirname(__file__))
 
 from hanoi_logic import (
-    GameState, render_frame,
-    PEG_COLS, MAX_SCROLL, BLOCK_WIDTHS,
+    GameState, render_frame, compute_layout,
+    BLOCK_WIDTHS,
     BRIGHTNESS_BLOCK, BRIGHTNESS_STICK, BRIGHTNESS_HELD,
-    HELD_ROW, SCREEN_WIDTH, SCREEN_HEIGHT,
-    PEG_ROW_TOP, PEG_ROW_BOTTOM,
+    HELD_ROW, SCREEN_WIDTH, SCREEN_HEIGHT, SCREEN_CENTER_COL,
+    PEG_ROW_TOP, PEG_ROW_BOTTOM, NUM_PEGS,
 )
 
 
@@ -31,9 +31,69 @@ def make_game(level=1, scroll=0.0):
     return g
 
 
+def peg_scroll(game, peg_idx):
+    """Scroll value that exactly centres peg_idx on the screen."""
+    return float(game.peg_cols[peg_idx] - SCREEN_CENTER_COL)
+
+
 def grid_str(grid):
-    """Pretty-print a grid for test failure messages."""
     return "\n" + "\n".join(" ".join(str(v) for v in row) for row in grid)
+
+
+# ---------------------------------------------------------------------------
+# compute_layout
+# ---------------------------------------------------------------------------
+
+class TestComputeLayout:
+    def test_peg0_always_at_col2(self):
+        for level in range(1, 5):
+            peg_cols, _, _ = compute_layout(level)
+            assert peg_cols[0] == 2, f"level {level}"
+
+    def test_separation_equals_2_times_level(self):
+        for level in range(1, 5):
+            peg_cols, _, _ = compute_layout(level)
+            sep = 2 * level
+            assert peg_cols[1] - peg_cols[0] == sep
+            assert peg_cols[2] - peg_cols[1] == sep
+
+    def test_max_scroll_centres_peg2(self):
+        """At max_scroll, peg2 lands on screen centre column."""
+        for level in range(1, 5):
+            peg_cols, _, max_scroll = compute_layout(level)
+            assert peg_cols[2] - max_scroll == SCREEN_CENTER_COL
+
+    def test_world_width_covers_scroll_range(self):
+        for level in range(1, 5):
+            _, world_width, max_scroll = compute_layout(level)
+            assert world_width == max_scroll + SCREEN_WIDTH
+
+    def test_level1_values(self):
+        peg_cols, world_width, max_scroll = compute_layout(1)
+        assert peg_cols == [2, 4, 6]
+        assert max_scroll == 4
+        assert world_width == 9
+
+    def test_level2_values(self):
+        peg_cols, world_width, max_scroll = compute_layout(2)
+        assert peg_cols == [2, 6, 10]
+        assert max_scroll == 8
+
+    def test_level4_values(self):
+        peg_cols, world_width, max_scroll = compute_layout(4)
+        assert peg_cols == [2, 10, 18]
+        assert max_scroll == 16
+
+    def test_no_block_overlap_between_pegs(self):
+        """Widest block on adjacent pegs must not share a world column."""
+        for level in range(1, 5):
+            peg_cols, _, _ = compute_layout(level)
+            half = BLOCK_WIDTHS[level] // 2
+            # Right edge of block on peg0, left edge of block on peg1
+            right0 = peg_cols[0] + half
+            left1 = peg_cols[1] - half
+            assert right0 < left1, \
+                f"level {level}: overlap between peg0 and peg1"
 
 
 # ---------------------------------------------------------------------------
@@ -51,17 +111,14 @@ class TestSetup:
         assert g.pegs[2] == []
 
     def test_level2_stack_ordering(self):
-        g = make_game(level=2)
         # largest at index 0 (bottom), smallest at -1 (top)
-        assert g.pegs[0] == [2, 1]
+        assert make_game(level=2).pegs[0] == [2, 1]
 
     def test_level3_stack_ordering(self):
-        g = make_game(level=3)
-        assert g.pegs[0] == [3, 2, 1]
+        assert make_game(level=3).pegs[0] == [3, 2, 1]
 
     def test_level4_stack_ordering(self):
-        g = make_game(level=4)
-        assert g.pegs[0] == [4, 3, 2, 1]
+        assert make_game(level=4).pegs[0] == [4, 3, 2, 1]
 
     def test_initial_scroll_is_zero(self):
         assert GameState().scroll == 0.0
@@ -69,8 +126,14 @@ class TestSetup:
     def test_no_held_block_initially(self):
         assert GameState().held_block is None
 
-    def test_held_from_peg_none_initially(self):
-        assert GameState().held_from_peg is None
+    def test_peg_cols_set_by_setup(self):
+        g = make_game(level=1)
+        assert g.peg_cols == [2, 4, 6]
+
+    def test_max_scroll_set_by_setup(self):
+        g = make_game(level=2)
+        _, _, expected = compute_layout(2)
+        assert g.max_scroll == expected
 
     def test_setup_level_resets_scroll(self):
         g = GameState()
@@ -86,48 +149,51 @@ class TestSetup:
         assert g.held_block is None
         assert g.held_from_peg is None
 
+    def test_setup_updates_layout_for_new_level(self):
+        g = GameState()
+        g.level = 3
+        g.setup_level()
+        assert g.peg_cols == compute_layout(3)[0]
+        assert g.max_scroll == compute_layout(3)[2]
+
 
 # ---------------------------------------------------------------------------
 # Peg selection from scroll position
 # ---------------------------------------------------------------------------
 
 class TestPegSelection:
-    def test_peg_cols_defined(self):
-        assert PEG_COLS == [2, 7, 12]
+    def test_scroll_0_always_selects_peg0(self):
+        # peg0 is always at col 2 = screen centre at scroll 0
+        for level in range(1, 5):
+            g = make_game(level=level, scroll=0.0)
+            assert g.get_selected_peg() == 0, f"level {level}"
 
-    def test_scroll_0_selects_peg_0(self):
-        # screen centre at world col 0+2=2 → closest to peg 0 (col 2)
-        g = make_game(scroll=0.0)
+    def test_peg1_selected_at_correct_scroll(self):
+        for level in range(1, 5):
+            g = make_game(level=level)
+            g.scroll = peg_scroll(g, 1)
+            assert g.get_selected_peg() == 1, f"level {level}"
+
+    def test_peg2_selected_at_max_scroll(self):
+        for level in range(1, 5):
+            g = make_game(level=level)
+            g.scroll = float(g.max_scroll)
+            assert g.get_selected_peg() == 2, f"level {level}"
+
+    def test_selection_favours_closer_peg(self):
+        g = make_game(level=2)   # pegs at 2, 6, 10; sep=4
+        # scroll=1: centre=3, dist to peg0(2)=1, dist to peg1(6)=3 → peg0
+        g.scroll = 1.0
         assert g.get_selected_peg() == 0
-
-    def test_scroll_5_selects_peg_1(self):
-        # screen centre at world col 5+2=7 → exactly peg 1
-        g = make_game(scroll=5.0)
+        # scroll=3: centre=5, dist to peg0=3, dist to peg1=1 → peg1
+        g.scroll = 3.0
         assert g.get_selected_peg() == 1
 
-    def test_scroll_10_selects_peg_2(self):
-        # screen centre at world col 10+2=12 → exactly peg 2
-        g = make_game(scroll=10.0)
-        assert g.get_selected_peg() == 2
-
-    def test_scroll_slightly_right_of_peg0_still_selects_peg0(self):
-        # centre at 4 → dist to peg0(2)=2, dist to peg1(7)=3 → peg 0
-        g = make_game(scroll=2.0)
-        assert g.get_selected_peg() == 0
-
-    def test_scroll_closer_to_peg1_selects_peg1(self):
-        # centre at 6 → dist to peg0(2)=4, dist to peg1(7)=1 → peg 1
-        g = make_game(scroll=4.0)
-        assert g.get_selected_peg() == 1
-
-    def test_scroll_between_peg1_and_peg2_selects_closer(self):
-        # centre at 10 → dist to peg1(7)=3, dist to peg2(12)=2 → peg 2
-        g = make_game(scroll=8.0)
-        assert g.get_selected_peg() == 2
-
-    def test_max_scroll_selects_peg_2(self):
-        g = make_game(scroll=float(MAX_SCROLL))
-        assert g.get_selected_peg() == 2
+    def test_max_scroll_selects_peg2_all_levels(self):
+        for level in range(1, 5):
+            g = make_game(level=level)
+            g.scroll = float(g.max_scroll)
+            assert g.get_selected_peg() == 2
 
 
 # ---------------------------------------------------------------------------
@@ -155,23 +221,22 @@ class TestPickUp:
         assert g.held_from_peg == 0
 
     def test_pick_up_from_empty_peg_fails(self):
-        g = make_game(level=1, scroll=5.0)   # peg 1 is empty
+        g = make_game(level=1)
+        g.scroll = peg_scroll(g, 1)   # peg 1 is empty
         assert g.action() is False
         assert g.held_block is None
 
     def test_pick_up_top_block_from_two_block_stack(self):
-        g = make_game(level=2, scroll=0.0)  # pegs[0] = [2, 1]
+        g = make_game(level=2, scroll=0.0)   # pegs[0] = [2, 1]
         g.action()
         assert g.held_block == 1
         assert g.pegs[0] == [2]
 
-    def test_cannot_pick_up_when_already_holding(self):
-        """Right button while holding tries to place, not pick up again."""
+    def test_right_button_while_holding_tries_to_place(self):
         g = make_game(level=2, scroll=0.0)
-        g.action()              # pick up block 1
+        g.action()                  # pick up block 1
         assert g.held_block == 1
-        # Press again on same (now-non-empty) peg → try to place block 1 on peg 0
-        # peg 0 top is block 2 (larger than 1) → placement succeeds
+        # Press again on same peg (block 2 at top → larger → legal)
         result = g.action()
         assert result is True
         assert g.held_block is None
@@ -185,41 +250,40 @@ class TestPickUp:
 class TestPlace:
     def test_place_on_empty_peg(self):
         g = make_game(level=1, scroll=0.0)
-        g.action()          # pick up block 1
-        g.scroll = 5.0      # select peg 1
+        g.action()                      # pick up block 1
+        g.scroll = peg_scroll(g, 1)
         assert g.action() is True
         assert g.pegs[1] == [1]
         assert g.held_block is None
 
     def test_place_smaller_on_larger_succeeds(self):
         g = make_game(level=2, scroll=0.0)
-        g.action()              # pick up block 1 from peg 0
-        g.scroll = 5.0
-        g.action()              # place block 1 on peg 1
-        g.scroll = 0.0
-        g.action()              # pick up block 2 from peg 0
-        g.scroll = 10.0
-        result = g.action()     # place block 2 on peg 2 (empty)
-        assert result is True
+        g.action()                      # pick up block 1
+        g.scroll = peg_scroll(g, 1)
+        g.action()                      # place block 1 on peg 1
+        g.scroll = peg_scroll(g, 0)
+        g.action()                      # pick up block 2
+        g.scroll = peg_scroll(g, 2)
+        assert g.action() is True
         assert g.pegs[2] == [2]
 
     def test_place_larger_on_smaller_fails(self):
         g = make_game(level=2, scroll=0.0)
-        g.action()              # pick up block 1
-        g.scroll = 5.0
-        g.action()              # place block 1 on peg 1
-        g.scroll = 0.0
-        g.action()              # pick up block 2
-        g.scroll = 5.0          # peg 1 has block 1 on top
-        result = g.action()     # try to place block 2 on block 1 → illegal
+        g.action()                      # pick up block 1
+        g.scroll = peg_scroll(g, 1)
+        g.action()                      # place block 1 on peg 1
+        g.scroll = peg_scroll(g, 0)
+        g.action()                      # pick up block 2
+        g.scroll = peg_scroll(g, 1)    # peg 1 has block 1 on top
+        result = g.action()             # illegal: block 2 on block 1
         assert result is False
         assert g.held_block == 2
-        assert g.pegs[1] == [1]  # peg 1 unchanged
+        assert g.pegs[1] == [1]
 
     def test_place_block_back_on_source_peg(self):
         g = make_game(level=2, scroll=0.0)
-        g.action()              # pick up block 1
-        result = g.action()     # place back on same peg (block 2 is larger)
+        g.action()                      # pick up block 1
+        result = g.action()             # put back (block 2 is larger → legal)
         assert result is True
         assert g.pegs[0] == [2, 1]
         assert g.held_block is None
@@ -232,7 +296,7 @@ class TestPlace:
 class TestCancel:
     def test_cancel_returns_block_to_source(self):
         g = make_game(level=1, scroll=0.0)
-        g.action()     # pick up block 1 from peg 0
+        g.action()
         g.cancel()
         assert g.held_block is None
         assert g.pegs[0] == [1]
@@ -242,22 +306,22 @@ class TestCancel:
         g.cancel()
         assert g.held_block is None
 
-    def test_cancel_restores_to_scrolled_away_peg(self):
+    def test_cancel_restores_after_scrolling_away(self):
         g = make_game(level=2, scroll=0.0)
-        g.action()          # pick up block 1 from peg 0
-        g.scroll = 9.0      # scroll far away
+        g.action()                      # pick up block 1 from peg 0
+        g.scroll = float(g.max_scroll)  # scroll far away
         g.cancel()
         assert g.pegs[0] == [2, 1]
         assert g.held_block is None
 
     def test_cancel_with_multi_block_pickup(self):
         g = make_game(level=3, scroll=0.0)
-        # Move block 1 to peg 1 first
+        # Move block 1 to peg 1
         g.action()
-        g.scroll = 5.0
+        g.scroll = peg_scroll(g, 1)
         g.action()
-        # Now pick up block 2 from peg 0
-        g.scroll = 0.0
+        # Pick up block 2 from peg 0
+        g.scroll = peg_scroll(g, 0)
         g.action()
         assert g.held_block == 2
         g.cancel()
@@ -274,36 +338,37 @@ class TestWinCondition:
 
     def test_win_level1(self):
         g = make_game(level=1, scroll=0.0)
-        g.action()          # pick up block 1
-        g.scroll = 10.0
-        g.action()          # place on peg 2
+        g.action()                      # pick up block 1
+        g.scroll = peg_scroll(g, 2)
+        g.action()                      # place on peg 2
         assert g.is_level_complete()
 
     def test_not_won_with_held_block(self):
         g = make_game(level=1, scroll=0.0)
-        g.action()          # pick up block 1 – now held
-        # Manually populate peg 2 (as if cheating)
-        g.pegs[2] = [1]
+        g.action()                      # block 1 now held
+        g.pegs[2] = [1]                 # cheat: put it on peg2 anyway
         g.pegs[0] = []
-        # Still holding – should not count as won
-        assert not g.is_level_complete()
+        assert not g.is_level_complete()  # still held → not complete
 
     def test_not_won_until_all_blocks_on_peg2(self):
         g = make_game(level=2, scroll=0.0)
         # Move only block 1 to peg 2
         g.action()
-        g.scroll = 10.0
+        g.scroll = peg_scroll(g, 2)
         g.action()
         assert not g.is_level_complete()
 
     def test_win_level2_full_solve(self):
-        g = make_game(level=2, scroll=0.0)
-        # Move block 1 to peg 1
-        g.action(); g.scroll = 5.0; g.action()
-        # Move block 2 to peg 2
-        g.scroll = 0.0; g.action(); g.scroll = 10.0; g.action()
-        # Move block 1 to peg 2
-        g.scroll = 5.0; g.action(); g.scroll = 10.0; g.action()
+        g = make_game(level=2)
+        # block1: peg0 → peg1
+        g.scroll = peg_scroll(g, 0); g.action()
+        g.scroll = peg_scroll(g, 1); g.action()
+        # block2: peg0 → peg2
+        g.scroll = peg_scroll(g, 0); g.action()
+        g.scroll = peg_scroll(g, 2); g.action()
+        # block1: peg1 → peg2
+        g.scroll = peg_scroll(g, 1); g.action()
+        g.scroll = peg_scroll(g, 2); g.action()
         assert g.is_level_complete()
 
 
@@ -328,16 +393,18 @@ class TestLevelProgression:
             g.next_level()
             assert g.level == expected
 
-    def test_next_level_resets_state(self):
+    def test_next_level_resets_state_and_layout(self):
         g = make_game(level=1, scroll=0.0)
-        g.action()          # pick up block 1
-        g.scroll = 10.0
-        g.action()          # place on peg 2 → won
+        g.action()                      # pick up
+        g.scroll = peg_scroll(g, 2)
+        g.action()                      # place → won
         g.next_level()
         assert g.level == 2
         assert g.pegs[0] == [2, 1]
         assert g.held_block is None
         assert g.scroll == 0.0
+        assert g.peg_cols == compute_layout(2)[0]
+        assert g.max_scroll == compute_layout(2)[2]
 
 
 # ---------------------------------------------------------------------------
@@ -346,40 +413,41 @@ class TestLevelProgression:
 
 class TestScrollUpdate:
     def test_tilt_left_scrolls_right(self):
-        g = make_game(scroll=5.0)
+        g = make_game(level=4, scroll=5.0)
         g.update_scroll(-512, 100)
         assert g.scroll > 5.0
 
     def test_tilt_right_scrolls_left(self):
-        g = make_game(scroll=5.0)
+        g = make_game(level=4, scroll=5.0)
         g.update_scroll(512, 100)
         assert g.scroll < 5.0
 
     def test_no_tilt_no_change(self):
-        g = make_game(scroll=5.0)
+        g = make_game(level=4, scroll=5.0)
         g.update_scroll(0, 100)
         assert g.scroll == 5.0
 
     def test_scroll_clamped_at_zero(self):
-        g = make_game(scroll=0.0)
-        g.update_scroll(1024, 100_000)   # massive tilt right for a long time
+        g = make_game(level=4, scroll=0.0)
+        g.update_scroll(1024, 100_000)
         assert g.scroll == 0.0
 
     def test_scroll_clamped_at_max(self):
-        g = make_game(scroll=float(MAX_SCROLL))
+        g = make_game(level=4)
+        g.scroll = float(g.max_scroll)
         g.update_scroll(-1024, 100_000)
-        assert g.scroll == float(MAX_SCROLL)
+        assert g.scroll == float(g.max_scroll)
 
     def test_larger_tilt_moves_faster(self):
-        g1 = make_game(scroll=5.0)
-        g2 = make_game(scroll=5.0)
+        g1 = make_game(level=4, scroll=5.0)
+        g2 = make_game(level=4, scroll=5.0)
         g1.update_scroll(-256, 100)
         g2.update_scroll(-1024, 100)
         assert g2.scroll > g1.scroll
 
     def test_longer_dt_moves_more(self):
-        g1 = make_game(scroll=5.0)
-        g2 = make_game(scroll=5.0)
+        g1 = make_game(level=4, scroll=5.0)
+        g2 = make_game(level=4, scroll=5.0)
         g1.update_scroll(-512, 50)
         g2.update_scroll(-512, 200)
         assert g2.scroll > g1.scroll
@@ -388,8 +456,10 @@ class TestScrollUpdate:
         g = make_game(scroll=3.9)
         assert g.scroll_int == 3
 
-    def test_max_scroll_value(self):
-        assert MAX_SCROLL == 10
+    def test_max_scroll_per_level(self):
+        for level in range(1, 5):
+            g = make_game(level=level)
+            assert g.max_scroll == 4 * level
 
 
 # ---------------------------------------------------------------------------
@@ -398,8 +468,7 @@ class TestScrollUpdate:
 
 class TestRenderDimensions:
     def test_returns_5_rows(self):
-        grid = render_frame(make_game())
-        assert len(grid) == SCREEN_HEIGHT
+        assert len(render_frame(make_game())) == SCREEN_HEIGHT
 
     def test_each_row_has_5_cols(self):
         grid = render_frame(make_game())
@@ -419,13 +488,16 @@ class TestRenderDimensions:
 # ---------------------------------------------------------------------------
 
 class TestRenderSticks:
-    def test_visible_peg0_at_scroll0(self):
-        g = make_game(level=1)
-        g.pegs = [[], [], []]   # no blocks to mask sticks
-        g.scroll = 0.0          # peg 0 (world col 2) at screen col 2
-        grid = render_frame(g, stick_on=True, held_on=False)
-        for row in range(PEG_ROW_TOP, SCREEN_HEIGHT):
-            assert grid[row][2] >= BRIGHTNESS_STICK, grid_str(grid)
+    def test_peg0_visible_at_scroll0(self):
+        """Peg 0 is always at world col 2 = screen col 2 at scroll 0."""
+        for level in range(1, 5):
+            g = make_game(level=level)
+            g.pegs = [[], [], []]
+            g.scroll = 0.0
+            grid = render_frame(g, stick_on=True, held_on=False)
+            for row in range(PEG_ROW_TOP, SCREEN_HEIGHT):
+                assert grid[row][2] >= BRIGHTNESS_STICK, \
+                    f"level {level} row {row}" + grid_str(grid)
 
     def test_stick_hidden_when_off(self):
         g = make_game(level=1)
@@ -434,38 +506,32 @@ class TestRenderSticks:
         grid = render_frame(g, stick_on=False, held_on=False)
         assert grid[2][2] == 0
 
-    def test_peg1_visible_at_scroll5(self):
-        g = make_game(level=1)
-        g.pegs = [[], [], []]
-        g.scroll = 5.0          # peg 1 (world col 7) at screen col 2
-        grid = render_frame(g, stick_on=True, held_on=False)
-        for row in range(PEG_ROW_TOP, SCREEN_HEIGHT):
-            assert grid[row][2] >= BRIGHTNESS_STICK
+    def test_peg1_visible_when_centred(self):
+        for level in range(1, 5):
+            g = make_game(level=level)
+            g.pegs = [[], [], []]
+            g.scroll = peg_scroll(g, 1)
+            grid = render_frame(g, stick_on=True, held_on=False)
+            for row in range(PEG_ROW_TOP, SCREEN_HEIGHT):
+                assert grid[row][SCREEN_CENTER_COL] >= BRIGHTNESS_STICK, \
+                    f"level {level}" + grid_str(grid)
 
-    def test_peg2_visible_at_scroll10(self):
-        g = make_game(level=1)
-        g.pegs = [[], [], []]
-        g.scroll = 10.0         # peg 2 (world col 12) at screen col 2
-        grid = render_frame(g, stick_on=True, held_on=False)
-        for row in range(PEG_ROW_TOP, SCREEN_HEIGHT):
-            assert grid[row][2] >= BRIGHTNESS_STICK
+    def test_peg2_visible_when_centred(self):
+        for level in range(1, 5):
+            g = make_game(level=level)
+            g.pegs = [[], [], []]
+            g.scroll = peg_scroll(g, 2)
+            grid = render_frame(g, stick_on=True, held_on=False)
+            for row in range(PEG_ROW_TOP, SCREEN_HEIGHT):
+                assert grid[row][SCREEN_CENTER_COL] >= BRIGHTNESS_STICK, \
+                    f"level {level}"
 
-    def test_peg_not_drawn_in_row0(self):
+    def test_stick_not_drawn_in_row0(self):
         g = make_game(level=1)
         g.pegs = [[], [], []]
         g.scroll = 0.0
         grid = render_frame(g, stick_on=True, held_on=False)
-        assert grid[HELD_ROW][2] == 0   # row 0 is reserved for held block
-
-    def test_off_screen_peg_not_drawn(self):
-        g = make_game(level=1)
-        g.scroll = 0.0   # peg 1 at screen col 5 (off-screen)
-        grid = render_frame(g, stick_on=True, held_on=False)
-        # peg 1 world col 7, screen col 7-0=7 → off-screen
-        # Only peg 0 (sc=2) visible; peg 1 and peg 2 should not appear
-        # (we just check peg 1 column would be off-screen at scroll=0)
-        # Actually sc=7 → off screen; nothing to assert here beyond no crash
-        assert len(grid) == 5   # sanity
+        assert grid[HELD_ROW][2] == 0
 
 
 # ---------------------------------------------------------------------------
@@ -473,75 +539,71 @@ class TestRenderSticks:
 # ---------------------------------------------------------------------------
 
 class TestRenderBlocks:
-    def test_block1_at_bottom_row_peg0(self):
-        g = make_game(level=1)
-        g.scroll = 0.0
+    def test_block1_at_bottom_of_peg0(self):
+        g = make_game(level=1, scroll=0.0)
+        # peg0 at sc=2, block1 (width 1) at col 2
         grid = render_frame(g, stick_on=False, held_on=False)
         assert grid[PEG_ROW_BOTTOM][2] == BRIGHTNESS_BLOCK, grid_str(grid)
 
-    def test_block2_width3_at_peg0(self):
-        g = make_game(level=1)
+    def test_block2_width3_centred_at_peg0(self):
+        g = make_game(level=2, scroll=0.0)
         g.pegs = [[2], [], []]
-        g.scroll = 0.0   # peg 0 at sc=2, block half=1 → cols 1,2,3
+        # peg0 at col 2; block2 half=1 → world cols 1-3 → sc 1-3
         grid = render_frame(g, stick_on=False, held_on=False)
         for sc in [1, 2, 3]:
             assert grid[PEG_ROW_BOTTOM][sc] == BRIGHTNESS_BLOCK, grid_str(grid)
         assert grid[PEG_ROW_BOTTOM][0] == 0
         assert grid[PEG_ROW_BOTTOM][4] == 0
 
-    def test_block3_width5_at_peg0(self):
-        g = make_game(level=1)
+    def test_block3_width5_fills_screen_at_peg0(self):
+        g = make_game(level=3, scroll=0.0)
         g.pegs = [[3], [], []]
-        g.scroll = 0.0   # peg 0 at sc=2, half=2 → cols 0-4
+        # peg0 at col 2; block3 half=2 → world cols 0-4 → sc 0-4
         grid = render_frame(g, stick_on=False, held_on=False)
         for sc in range(5):
             assert grid[PEG_ROW_BOTTOM][sc] == BRIGHTNESS_BLOCK, grid_str(grid)
 
-    def test_block1_above_block2(self):
-        g = make_game(level=1)
-        g.pegs = [[2, 1], [], []]   # depth 0=block2 at row4, depth 1=block1 at row3
-        g.scroll = 0.0
+    def test_block1_stacked_above_block2(self):
+        g = make_game(level=2, scroll=0.0)
+        # depth 0 = block2 at row4, depth 1 = block1 at row3
         grid = render_frame(g, stick_on=False, held_on=False)
-        # Block 2 at row 4, cols 1-3
         for sc in [1, 2, 3]:
             assert grid[4][sc] == BRIGHTNESS_BLOCK
-        # Block 1 at row 3, col 2
         assert grid[3][2] == BRIGHTNESS_BLOCK
         assert grid[3][1] == 0
         assert grid[3][3] == 0
 
-    def test_four_blocks_stacked(self):
-        g = make_game(level=4)
-        g.scroll = 0.0
-        grid = render_frame(g, stick_on=False, held_on=False)
-        # Row 4: block 4 (width 7, wraps), rows 3,2,1: blocks 3,2,1
-        assert grid[3][2] == BRIGHTNESS_BLOCK  # block 3, centre
-        assert grid[2][2] == BRIGHTNESS_BLOCK  # block 2, centre
-        assert grid[1][2] == BRIGHTNESS_BLOCK  # block 1, centre
-
-    def test_block_brighter_than_stick(self):
-        g = make_game(level=1)
-        g.scroll = 0.0   # peg 0 at sc=2, block 1 at row 4, sc 2
+    def test_block_overrides_stick(self):
+        g = make_game(level=1, scroll=0.0)
         grid = render_frame(g, stick_on=True, held_on=False)
-        # Block (9) overrides stick (5) at same position
+        # Block (9) beats stick (5) at same position
         assert grid[PEG_ROW_BOTTOM][2] == BRIGHTNESS_BLOCK
 
-    def test_block_on_peg1_at_scroll5(self):
-        g = make_game(level=1)
-        g.pegs = [[], [1], []]
-        g.scroll = 5.0   # peg 1 (world col 7) at sc=2
-        grid = render_frame(g, stick_on=False, held_on=False)
-        assert grid[PEG_ROW_BOTTOM][2] == BRIGHTNESS_BLOCK
+    def test_block_on_peg1_centred(self):
+        for level in range(1, 5):
+            g = make_game(level=level)
+            g.pegs = [[], [1], []]
+            g.scroll = peg_scroll(g, 1)
+            grid = render_frame(g, stick_on=False, held_on=False)
+            assert grid[PEG_ROW_BOTTOM][SCREEN_CENTER_COL] == BRIGHTNESS_BLOCK, \
+                f"level {level}" + grid_str(grid)
 
-    def test_scroll_moves_block(self):
-        g = make_game(level=1)
-        g.scroll = 0.0
+    def test_scroll_shifts_block_on_screen(self):
+        g = make_game(level=1, scroll=0.0)
         grid0 = render_frame(g, stick_on=False, held_on=False)
-        g.scroll = 2.0   # peg 0 now at sc=0
+        g.scroll = 2.0          # peg0 now at sc=0
         grid2 = render_frame(g, stick_on=False, held_on=False)
         assert grid0[PEG_ROW_BOTTOM][2] == BRIGHTNESS_BLOCK
         assert grid2[PEG_ROW_BOTTOM][0] == BRIGHTNESS_BLOCK
         assert grid2[PEG_ROW_BOTTOM][2] == 0
+
+    def test_four_blocks_stacked_rows(self):
+        g = make_game(level=4, scroll=0.0)
+        grid = render_frame(g, stick_on=False, held_on=False)
+        # blocks 3,2,1 at rows 3,2,1 (block4 at row4 and wrapped)
+        assert grid[3][2] == BRIGHTNESS_BLOCK   # block3 centre
+        assert grid[2][2] == BRIGHTNESS_BLOCK   # block2 centre
+        assert grid[1][2] == BRIGHTNESS_BLOCK   # block1 centre
 
 
 # ---------------------------------------------------------------------------
@@ -549,65 +611,58 @@ class TestRenderBlocks:
 # ---------------------------------------------------------------------------
 
 class TestBlock4Wrap:
-    def _setup(self, scroll=0.0):
-        g = make_game(level=1)
-        g.pegs = [[4], [], []]   # block 4 on peg 0 (world col 2)
-        g.scroll = scroll
+    def _game_with_block4_on_peg0(self):
+        g = make_game(level=4, scroll=0.0)
+        g.pegs = [[4], [], []]
         return g
 
-    def test_main_row_fully_covered_at_scroll0(self):
-        """At scroll=0, block spans world cols -1..5; screen cols -1..5.
-        Screen cols 0-4 should be lit in row 4."""
-        g = self._setup(scroll=0.0)
-        grid = render_frame(g, stick_on=False, held_on=False)
+    def test_main_row_fully_lit(self):
+        """At scroll 0 peg0 is at sc=2; block4 spans sc -1..5; cols 0-4 lit."""
+        grid = render_frame(self._game_with_block4_on_peg0(),
+                            stick_on=False, held_on=False)
         for sc in range(5):
             assert grid[4][sc] == BRIGHTNESS_BLOCK, \
                 f"col {sc} not lit" + grid_str(grid)
 
     def test_left_overflow_wraps_to_row_above(self):
-        """Screen col -1 (world col -1) wraps to (row-1, col 4)."""
-        g = self._setup(scroll=0.0)
-        grid = render_frame(g, stick_on=False, held_on=False)
+        """sc = -1 → wrapped to (row-1, col 4)."""
+        grid = render_frame(self._game_with_block4_on_peg0(),
+                            stick_on=False, held_on=False)
         assert grid[3][4] == BRIGHTNESS_BLOCK, grid_str(grid)
 
     def test_right_overflow_wraps_to_row_above(self):
-        """Screen col 5 (world col 5) wraps to (row-1, col 0)."""
-        g = self._setup(scroll=0.0)
-        grid = render_frame(g, stick_on=False, held_on=False)
+        """sc = 5 → wrapped to (row-1, col 0)."""
+        grid = render_frame(self._game_with_block4_on_peg0(),
+                            stick_on=False, held_on=False)
         assert grid[3][0] == BRIGHTNESS_BLOCK, grid_str(grid)
 
-    def test_no_wrap_for_smaller_blocks(self):
-        """Blocks 1-3 should never produce wrapped pixels when centred."""
+    def test_no_wrap_for_blocks_1_to_3(self):
+        """Blocks 1-3 centred at peg0 should never produce wrap pixels."""
         for block_num in [1, 2, 3]:
-            g = make_game(level=1)
+            g = make_game(level=block_num, scroll=0.0)
             g.pegs = [[block_num], [], []]
-            g.scroll = 0.0
             grid = render_frame(g, stick_on=False, held_on=False)
-            # Row 3 should be empty
             assert all(v == 0 for v in grid[3]), \
                 f"Unexpected pixel in row 3 for block {block_num}" + grid_str(grid)
 
-    def test_block4_at_scroll5_main_row(self):
-        """Block 4 on peg 1 (world col 7) at scroll 5."""
-        g = make_game(level=1)
+    def test_block4_wraps_on_peg1_centred(self):
+        g = make_game(level=4)
         g.pegs = [[], [4], []]
-        g.scroll = 5.0   # peg 1 at sc=2, block spans sc -1..5 again
+        g.scroll = peg_scroll(g, 1)    # peg1 at sc=2
         grid = render_frame(g, stick_on=False, held_on=False)
         for sc in range(5):
-            assert grid[4][sc] == BRIGHTNESS_BLOCK, grid_str(grid)
+            assert grid[4][sc] == BRIGHTNESS_BLOCK
         assert grid[3][4] == BRIGHTNESS_BLOCK
         assert grid[3][0] == BRIGHTNESS_BLOCK
 
     def test_block4_no_wrap_from_row0(self):
-        """7-wide block in row 0 has nowhere to wrap to (no row -1)."""
-        g = make_game(level=1)
+        """No crash when held block is 7-wide (no row above row 0)."""
+        g = make_game(level=4)
         g.pegs = [[], [], []]
         g.held_block = 4
         g.held_from_peg = 0
-        # held block draws at row 0, screen-centred → no crash, no row -1 access
         grid = render_frame(g, stick_on=False, held_on=True)
-        # Just verify no exception and grid is valid
-        assert len(grid) == 5
+        assert len(grid) == 5   # no exception raised
 
 
 # ---------------------------------------------------------------------------
@@ -616,14 +671,14 @@ class TestBlock4Wrap:
 
 class TestRenderHeld:
     def test_held_block1_at_top_centre(self):
-        g = make_game(level=1, scroll=5.0)
+        g = make_game(level=1)
         g.held_block = 1
         g.held_from_peg = 0
         grid = render_frame(g, stick_on=False, held_on=True)
-        assert grid[HELD_ROW][2] == BRIGHTNESS_HELD
+        assert grid[HELD_ROW][SCREEN_CENTER_COL] == BRIGHTNESS_HELD
 
     def test_held_block2_spans_3_cols(self):
-        g = make_game(level=1, scroll=5.0)
+        g = make_game(level=1)
         g.held_block = 2
         g.held_from_peg = 0
         grid = render_frame(g, stick_on=False, held_on=True)
@@ -633,102 +688,108 @@ class TestRenderHeld:
         assert grid[HELD_ROW][4] == 0
 
     def test_held_block_hidden_when_off(self):
-        g = make_game(level=1, scroll=0.0)
+        g = make_game(level=1)
         g.held_block = 2
         g.held_from_peg = 0
         grid = render_frame(g, stick_on=False, held_on=False)
         assert all(v == 0 for v in grid[HELD_ROW])
 
     def test_held_block_independent_of_scroll(self):
-        """Held block always appears at top-centre regardless of scroll."""
-        for scroll in [0.0, 5.0, 10.0]:
-            g = make_game(level=1, scroll=scroll)
+        for level in range(1, 5):
+            g = make_game(level=level)
             g.held_block = 1
             g.held_from_peg = 0
-            grid = render_frame(g, stick_on=False, held_on=True)
-            assert grid[HELD_ROW][2] == BRIGHTNESS_HELD, \
-                f"scroll={scroll}" + grid_str(grid)
+            for scroll in [0.0, peg_scroll(g, 1), float(g.max_scroll)]:
+                g.scroll = scroll
+                grid = render_frame(g, stick_on=False, held_on=True)
+                assert grid[HELD_ROW][SCREEN_CENTER_COL] == BRIGHTNESS_HELD, \
+                    f"level {level} scroll {scroll}" + grid_str(grid)
 
     def test_held_block3_fills_top_row(self):
         g = make_game(level=1)
-        g.held_block = 3   # width 5: cols 0-4
+        g.held_block = 3
         g.held_from_peg = 0
         grid = render_frame(g, stick_on=False, held_on=True)
         for sc in range(5):
             assert grid[HELD_ROW][sc] == BRIGHTNESS_HELD
 
     def test_held_block4_clips_to_screen(self):
-        """7-wide held block in row 0: only cols 0-4 lit (no wrap available)."""
-        g = make_game(level=1)
-        g.held_block = 4   # width 7, centre at sc=2 → sc -1..5
+        """7-wide held block centred at sc=2: inner 5 cols lit, no crash."""
+        g = make_game(level=4)
+        g.held_block = 4
         g.held_from_peg = 0
         grid = render_frame(g, stick_on=False, held_on=True)
-        # Cols 0-4 should be lit (inner 5 of 7)
         for sc in range(5):
             assert grid[HELD_ROW][sc] == BRIGHTNESS_HELD
-        # No crash – that's the main assertion for the overflow case
 
     def test_no_held_block_row0_empty(self):
         g = make_game(level=1, scroll=0.0)
         grid = render_frame(g, stick_on=False, held_on=True)
-        # block 1 is on peg 0, not held
-        assert grid[HELD_ROW][2] == 0
+        assert grid[HELD_ROW][SCREEN_CENTER_COL] == 0   # block on peg, not held
 
 
 # ---------------------------------------------------------------------------
-# Integration – simulate a full level-1 solve
+# Integration – full level solves
 # ---------------------------------------------------------------------------
 
 class TestIntegration:
     def test_level1_solve(self):
         g = GameState()
-        assert g.level == 1
         assert not g.is_level_complete()
 
-        # Pick up block 1 from peg 0
-        g.scroll = 0.0
-        assert g.action() is True
-        assert g.held_block == 1
+        g.scroll = peg_scroll(g, 0); g.action()     # pick up
+        g.scroll = peg_scroll(g, 2); g.action()     # place on peg2
 
-        # Scroll to peg 2 and place
-        g.scroll = 10.0
-        assert g.action() is True
-        assert g.held_block is None
         assert g.is_level_complete()
-
-        # Advance level
         g.next_level()
         assert g.level == 2
         assert g.pegs[0] == [2, 1]
 
     def test_level2_minimum_solve(self):
-        """Solve level 2 in 3 moves and verify completion."""
         g = make_game(level=2)
-
         moves = [
-            (0.0, 5.0),    # block 1: peg0 → peg1
-            (0.0, 10.0),   # block 2: peg0 → peg2
-            (5.0, 10.0),   # block 1: peg1 → peg2
+            (0, 1),    # block 1: peg0 → peg1
+            (0, 2),    # block 2: peg0 → peg2
+            (1, 2),    # block 1: peg1 → peg2
         ]
-        for src_scroll, dst_scroll in moves:
-            g.scroll = src_scroll
-            assert g.action() is True, "pick up failed"
-            g.scroll = dst_scroll
-            assert g.action() is True, "place failed"
-
+        for src, dst in moves:
+            g.scroll = peg_scroll(g, src); assert g.action() is True
+            g.scroll = peg_scroll(g, dst); assert g.action() is True
         assert g.is_level_complete()
 
     def test_render_after_pickup_shows_held(self):
         g = make_game(level=1, scroll=0.0)
-        g.action()   # pick up block 1
+        g.action()
         grid = render_frame(g, stick_on=False, held_on=True)
-        assert grid[HELD_ROW][2] == BRIGHTNESS_HELD
-        assert grid[PEG_ROW_BOTTOM][2] == 0   # block gone from peg
+        assert grid[HELD_ROW][SCREEN_CENTER_COL] == BRIGHTNESS_HELD
+        assert grid[PEG_ROW_BOTTOM][SCREEN_CENTER_COL] == 0
 
     def test_cancel_restores_render(self):
         g = make_game(level=1, scroll=0.0)
         g.action()
         g.cancel()
         grid = render_frame(g, stick_on=False, held_on=False)
-        assert grid[PEG_ROW_BOTTOM][2] == BRIGHTNESS_BLOCK
+        assert grid[PEG_ROW_BOTTOM][SCREEN_CENTER_COL] == BRIGHTNESS_BLOCK
         assert all(v == 0 for v in grid[HELD_ROW])
+
+    def test_all_levels_complete_and_cycle(self):
+        """Solve each level in minimum moves and verify cycling."""
+        g = GameState()
+        for level in range(1, 5):
+            assert g.level == level
+            _solve_hanoi(g, level, 0, 2, 1)
+            assert g.is_level_complete(), f"level {level} not complete"
+            g.next_level()
+        assert g.level == 1   # cycled back
+
+
+def _solve_hanoi(game, n, src, dst, aux):
+    """Recursive Tower of Hanoi solver using the game's action() interface."""
+    if n == 0:
+        return
+    _solve_hanoi(game, n - 1, src, aux, dst)
+    game.scroll = peg_scroll(game, src)
+    assert game.action() is True, f"pick up from peg {src} failed"
+    game.scroll = peg_scroll(game, dst)
+    assert game.action() is True, f"place on peg {dst} failed"
+    _solve_hanoi(game, n - 1, aux, dst, src)

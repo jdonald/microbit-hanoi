@@ -8,17 +8,27 @@ Controls:
                 place the held block on the selected peg
   Button A    – cancel: return the held block to where it came from
 
-The world is 15 columns wide; the display shows a 5-column window.
-Pegs are at world columns 2, 7, 12 (left, middle, right).
+The game world is wider than the 5-column display; peg separation grows
+with each level to fit wider blocks.  Pegs are always centred on-screen
+at scroll positions 0, sep, and 2*sep (sep = 2*level).
 
 Levels 1-4 require moving 1, 2, 3, 4 blocks from the leftmost peg to
 the rightmost peg.  After level 4 the game loops back to level 1.
 """
 
 from microbit import display, button_a, button_b, accelerometer, Image
-import audio
+import music
 import utime
 import hanoi_logic
+
+# Custom 5×5 star image (Image.STAR not available in all firmware versions)
+_STAR = Image(
+    '00900:'
+    '09090:'
+    '99999:'
+    '09090:'
+    '90009'
+)
 
 # ── Timing (milliseconds) ─────────────────────────────────────────────────
 LOOP_MS        = 20    # target loop period (~50 Hz)
@@ -40,21 +50,18 @@ def _grid_to_image(grid):
 def _show_victory():
     """Flash a star and play a congratulatory sound."""
     try:
-        audio.play(audio.Sound.HAPPY, wait=False)
+        music.play(music.POWER_UP, wait=False)
     except Exception:
-        try:
-            audio.play(audio.Sound.SPRING, wait=False)
-        except Exception:
-            pass
+        pass
 
     # Flash star three times then hold
     for _ in range(3):
-        display.show(Image.STAR)
+        display.show(_STAR)
         utime.sleep_ms(200)
         display.clear()
         utime.sleep_ms(150)
 
-    display.show(Image.STAR)
+    display.show(_STAR)
     utime.sleep_ms(1200)
     display.clear()
 
