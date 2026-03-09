@@ -655,14 +655,19 @@ class TestBlock4Wrap:
         assert grid[3][4] == BRIGHTNESS_BLOCK
         assert grid[3][0] == BRIGHTNESS_BLOCK
 
-    def test_block4_no_wrap_from_row0(self):
-        """No crash when held block is 7-wide (no row above row 0)."""
+    def test_block4_held_wraps_to_bottom_row(self):
+        """Held block 4 at row 0 has no row above; overflow wraps to row 4."""
         g = make_game(level=4)
         g.pegs = [[], [], []]
         g.held_block = 4
         g.held_from_peg = 0
         grid = render_frame(g, stick_on=False, held_on=True)
-        assert len(grid) == 5   # no exception raised
+        # Top row: centre 5 pixels lit
+        for sc in range(SCREEN_WIDTH):
+            assert grid[HELD_ROW][sc] == BRIGHTNESS_HELD
+        # Bottom row: two wrap corners lit
+        assert grid[SCREEN_HEIGHT - 1][0] == BRIGHTNESS_HELD,  "right overflow → (4,0)"
+        assert grid[SCREEN_HEIGHT - 1][SCREEN_WIDTH - 1] == BRIGHTNESS_HELD, "left overflow → (4,4)"
 
 
 # ---------------------------------------------------------------------------
@@ -713,14 +718,19 @@ class TestRenderHeld:
         for sc in range(5):
             assert grid[HELD_ROW][sc] == BRIGHTNESS_HELD
 
-    def test_held_block4_clips_to_screen(self):
-        """7-wide held block centred at sc=2: inner 5 cols lit, no crash."""
+    def test_held_block4_wraps_to_bottom_row(self):
+        """7-wide held block at row 0: centre 5 lit, overflow corners wrap to row 4."""
         g = make_game(level=4)
+        g.pegs = [[], [], []]   # no placed blocks so wrap pixels are unobstructed
         g.held_block = 4
         g.held_from_peg = 0
         grid = render_frame(g, stick_on=False, held_on=True)
-        for sc in range(5):
+        # Centre 5 pixels on top row
+        for sc in range(SCREEN_WIDTH):
             assert grid[HELD_ROW][sc] == BRIGHTNESS_HELD
+        # Two overflow corners on bottom row (the 'bend' for the held block)
+        assert grid[SCREEN_HEIGHT - 1][SCREEN_WIDTH - 1] == BRIGHTNESS_HELD
+        assert grid[SCREEN_HEIGHT - 1][0] == BRIGHTNESS_HELD
 
     def test_no_held_block_row0_empty(self):
         g = make_game(level=1, scroll=0.0)
@@ -888,17 +898,57 @@ class TestNoWrapArtifacts:
         assert all(v == 0 for row in grid for v in row), \
             "Block 4 far off-screen produced ghost pixels" + grid_str(grid)
 
-    def test_block4_wraps_only_edge_pixels_not_interior(self):
-        """Only sc==-1 and sc==5 wrap; interior off-screen pixels of block4 are clipped."""
+    def test_block4_wrap_only_when_exactly_centred(self):
+        """Block 4 wrap appears only when the peg is exactly at screen centre;
+        one scroll step off-centre must produce no wrap pixels (no sticky artefact)."""
         g = make_game(level=4)
         g.pegs = [[4], [], []]
-        # scroll=1: peg0 at sc=1; block spans sc -2..4
-        # dc=-3 → sc=-2 (clipped, NOT wrapped), dc=-2 → sc=-1 (wrapped → col4)
+
+        # scroll=0: peg0 world col 2, screen col 2 (centred) → both wraps show
+        g.scroll = 0.0
+        grid = render_frame(g, stick_on=False, held_on=False)
+        assert grid[3][4] == BRIGHTNESS_BLOCK, "left wrap at centred scroll"
+        assert grid[3][0] == BRIGHTNESS_BLOCK, "right wrap at centred scroll"
+
+        # scroll=1: peg0 at screen col 1 (not centred) → no wrap at all
         g.scroll = 1.0
         grid = render_frame(g, stick_on=False, held_on=False)
-        assert grid[3][4] == BRIGHTNESS_BLOCK, "(3,4) should be the sc=-1 wrap"
-        # sc=-2 must NOT appear at (3,3)
-        assert grid[3][3] == 0, "sc=-2 must be clipped, not wrapped" + grid_str(grid)
+        assert grid[3][4] == 0, "no wrap one step right of centre"
+        assert grid[3][0] == 0, "no wrap one step right of centre"
+
+    def test_block4_sticky_wrap_regression(self):
+        """Regression for the sticky-wrap bug: the wrap pixel at (row3,col4)
+        must disappear as soon as the player scrolls away from the centred position,
+        not persist for 6 scroll steps as each right-side pixel of the 7-wide block
+        passes through sc==-1."""
+        g = make_game(level=4)
+        g.pegs = [[4], [], []]
+        # Confirmed-bad scrolls from the original bug (scrolls 1-6 all showed
+        # ghost pixel at row3 col4 before the fix)
+        for s in range(1, 7):
+            g.scroll = float(s)
+            grid = render_frame(g, stick_on=False, held_on=False)
+            assert grid[3][4] == 0, \
+                f"Sticky wrap pixel at (3,4) for scroll={s}" + grid_str(grid)
+            assert grid[3][0] == 0, \
+                f"Sticky wrap pixel at (3,0) for scroll={s}" + grid_str(grid)
+
+    def test_held_block4_bend_around_regression(self):
+        """Regression: held block 4 showed flat 5 dots with no indication of its
+        7-pixel width.  After the fix the two overflow pixels wrap to the bottom row,
+        mirroring the bend-around behaviour of a placed block 4."""
+        g = make_game(level=4)
+        g.pegs = [[], [], []]
+        g.held_block = 4
+        g.held_from_peg = 0
+        grid = render_frame(g, stick_on=False, held_on=True)
+        # Top row: all 5 lit (centre 5 of the 7-wide block)
+        assert all(grid[HELD_ROW][sc] == BRIGHTNESS_HELD for sc in range(SCREEN_WIDTH))
+        # Bottom-row corners: the two overflow pixels that bend around
+        assert grid[SCREEN_HEIGHT - 1][0] == BRIGHTNESS_HELD, \
+            "right overflow must wrap to bottom-left corner"
+        assert grid[SCREEN_HEIGHT - 1][SCREEN_WIDTH - 1] == BRIGHTNESS_HELD, \
+            "left overflow must wrap to bottom-right corner"
 
 
 def _solve_hanoi(game, n, src, dst, aux):

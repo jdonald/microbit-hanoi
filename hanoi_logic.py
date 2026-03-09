@@ -211,23 +211,27 @@ def _draw_world_block(grid, block_num, world_col, row, scroll, brightness):
     """Draw a block in world coordinates.
 
     Block 4 (7 LEDs wide) is the only block wider than the 5-wide screen.
-    When it is centred on a peg the two pixels that overflow the screen edges
-    by exactly 1 step (sc == -1 or sc == SCREEN_WIDTH) wrap upward into the
-    row above – the 'bend around the top' effect.
+    When the peg is **exactly centred** on the screen (world_col - scroll ==
+    SCREEN_CENTER_COL) the two overflow pixels wrap one row upward – the
+    'bend around the top' effect.
 
-    All other out-of-bounds pixels (for any block) are simply clipped.
-    Wrapping pixels that are more than 1 step outside the screen would produce
-    ghost artefacts when a block is scrolled away from the visible area.
+    The centred-only condition prevents a sticky-wrap artefact: without it
+    the wrap pixel lingers for several scroll steps as successive pixels of
+    the 7-wide block pass through sc == -1 while the block slides off-screen.
+
+    All other out-of-bounds pixels (for any block/scroll) are clipped.
     """
     if not (1 <= block_num <= 4):
         return
     half = BLOCK_WIDTHS[block_num] // 2
+    centred = (block_num == 4 and row > HELD_ROW
+               and world_col - scroll == SCREEN_CENTER_COL)
     for dc in range(-half, half + 1):
         sc = world_col + dc - scroll
         if 0 <= sc < SCREEN_WIDTH:
             _set_pixel(grid, row, sc, brightness)
-        elif block_num == 4 and row > HELD_ROW:
-            # Only wrap the single overflow pixel on each side of the 7-wide block.
+        elif centred:
+            # Overflow pixels of centred block 4 bend upward into the row above.
             if sc == -1:
                 _set_pixel(grid, row - 1, SCREEN_WIDTH - 1, brightness)   # → col 4
             elif sc == SCREEN_WIDTH:
@@ -236,9 +240,23 @@ def _draw_world_block(grid, block_num, world_col, row, scroll, brightness):
 
 
 def _draw_screen_block(grid, block_num, row, centre_sc, brightness):
-    """Draw a block in screen coordinates (clipped, no wrapping)."""
+    """Draw a block in screen coordinates.
+
+    For block 4 (7 LEDs wide) the two pixels that overflow the screen edges
+    by exactly 1 step wrap to the adjacent row: row - 1 for rows 1-4, or
+    the bottom row (SCREEN_HEIGHT - 1) when the block is at row 0 (held).
+    This gives the held block 4 the same 'bend around' visual as a placed one.
+    """
     if not (1 <= block_num <= 4):
         return
     half = BLOCK_WIDTHS[block_num] // 2
     for dc in range(-half, half + 1):
-        _set_pixel(grid, row, centre_sc + dc, brightness)
+        sc = centre_sc + dc
+        if 0 <= sc < SCREEN_WIDTH:
+            _set_pixel(grid, row, sc, brightness)
+        elif block_num == 4:
+            wrap_row = (row - 1) if row > 0 else (SCREEN_HEIGHT - 1)
+            if sc == -1:
+                _set_pixel(grid, wrap_row, SCREEN_WIDTH - 1, brightness)   # → col 4
+            elif sc == SCREEN_WIDTH:
+                _set_pixel(grid, wrap_row, 0, brightness)                   # → col 0
