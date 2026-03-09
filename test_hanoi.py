@@ -783,6 +783,124 @@ class TestIntegration:
         assert g.level == 1   # cycled back
 
 
+# ---------------------------------------------------------------------------
+# Regression tests – wrap artefact bug
+# ---------------------------------------------------------------------------
+
+class TestNoWrapArtifacts:
+    """
+    Regression suite for the ghost-pixel artefact introduced when the wrap
+    logic applied to *any* off-screen pixel rather than only the single
+    overflow pixel of the 7-wide block.
+
+    Root cause: _draw_world_block was mapping sc < 0 → sc+5 for every block,
+    so a block at sc=-2 silently appeared at sc=3 in the row above.  The fix
+    restricts wrapping to block 4 only, and only for sc==-1 or sc==SCREEN_WIDTH
+    (exactly one step out of bounds on either edge).
+    """
+
+    # ── exact scenarios reported by the user ─────────────────────────────
+
+    def test_level1_scroll_right_no_ghost(self):
+        """Level 1 bug report: scrolling right before pickup shows a single
+        bright dot to the right of peg 2, one row up."""
+        g = make_game(level=1)          # block1 on peg0, world col 2
+        g.scroll = float(g.max_scroll)  # scroll=4 → block sc=-2
+        grid = render_frame(g, stick_on=False, held_on=False)
+        assert all(v == 0 for row in grid for v in row), \
+            "Ghost pixel when block1 scrolled off-screen" + grid_str(grid)
+
+    def test_level2_ghost_on_second_tower(self):
+        """Level 2 bug report: ghost two-block overlay on peg1 one row up
+        (blocks at peg0 and peg1 wrapping into row 3 when viewing peg2)."""
+        g = make_game(level=2)
+        g.pegs = [[2], [1], []]         # mid-solve state
+        g.scroll = 7.0                  # scroll_int=7: block2 centre sc=-5,
+                                        # block1 centre sc=-1 → both wrap spuriously
+        grid = render_frame(g, stick_on=False, held_on=False)
+        assert all(v == 0 for row in grid for v in row), \
+            "Ghost pixels visible when blocks scrolled off-screen" + grid_str(grid)
+
+    # ── blocks 1-3 must never produce wrap pixels ─────────────────────────
+
+    def test_block1_no_wrap_at_sc_minus1(self):
+        """block1 at sc=-1 (scroll=3, level 1) must not wrap to row above."""
+        g = make_game(level=1)
+        g.scroll = 3.0    # block1 at world col 2 → sc = 2-3 = -1
+        grid = render_frame(g, stick_on=False, held_on=False)
+        assert all(v == 0 for row in grid for v in row), grid_str(grid)
+
+    def test_block1_no_wrap_at_sc_minus2(self):
+        g = make_game(level=1)
+        g.scroll = 4.0    # sc = 2-4 = -2
+        grid = render_frame(g, stick_on=False, held_on=False)
+        assert all(v == 0 for row in grid for v in row), grid_str(grid)
+
+    def test_block2_right_edge_no_wrap(self):
+        """block2 right edge (dc=+1) at sc=-1 must not wrap."""
+        g = make_game(level=2)
+        g.pegs = [[2], [], []]
+        g.scroll = 4.0    # peg0 col 2: dc=+1 → sc = 3-4 = -1
+        grid = render_frame(g, stick_on=False, held_on=False)
+        assert all(v == 0 for row in grid for v in row), grid_str(grid)
+
+    def test_block3_no_wrap_when_off_screen(self):
+        g = make_game(level=3)
+        g.pegs = [[3], [], []]
+        g.scroll = peg_scroll(g, 2)   # block far off to the left
+        grid = render_frame(g, stick_on=False, held_on=False)
+        assert all(v == 0 for row in grid for v in row), grid_str(grid)
+
+    def test_no_wrap_for_any_block_at_every_scroll(self):
+        """Exhaustive: blocks 1-3 never produce pixels when the block is
+        entirely off-screen (i.e. no pixel of the block falls in sc 0-4)."""
+        for level in range(1, 4):
+            g = make_game(level=level)
+            g.pegs = [[level], [], []]  # single widest block on peg 0
+            half = BLOCK_WIDTHS[level] // 2
+            # Sample every integer scroll from 0 to max_scroll
+            for s in range(g.max_scroll + 1):
+                g.scroll = float(s)
+                peg_sc = g.peg_cols[0] - s          # screen col of block centre
+                # Skip if any pixel of the block is legitimately on-screen
+                if peg_sc + half >= 0 and peg_sc - half < SCREEN_WIDTH:
+                    continue
+                grid = render_frame(g, stick_on=False, held_on=False)
+                assert all(v == 0 for row in grid for v in row), \
+                    f"level {level} scroll {s}: ghost pixel" + grid_str(grid)
+
+    # ── block 4 wrap must still work correctly ────────────────────────────
+
+    def test_block4_wraps_when_centred_peg0(self):
+        g = make_game(level=4)
+        g.pegs = [[4], [], []]
+        g.scroll = 0.0    # peg0 at sc=2; block spans sc -1..5
+        grid = render_frame(g, stick_on=False, held_on=False)
+        assert grid[3][4] == BRIGHTNESS_BLOCK, "Left overflow must wrap to (3,4)"
+        assert grid[3][0] == BRIGHTNESS_BLOCK, "Right overflow must wrap to (3,0)"
+
+    def test_block4_no_ghost_when_far_off_screen(self):
+        """Block 4 scrolled many steps away must not produce spurious wrap pixels."""
+        g = make_game(level=4)
+        g.pegs = [[4], [], []]
+        g.scroll = 8.0    # peg0 at sc=2-8=-6; block spans sc -9..-3 → no sc==-1
+        grid = render_frame(g, stick_on=False, held_on=False)
+        assert all(v == 0 for row in grid for v in row), \
+            "Block 4 far off-screen produced ghost pixels" + grid_str(grid)
+
+    def test_block4_wraps_only_edge_pixels_not_interior(self):
+        """Only sc==-1 and sc==5 wrap; interior off-screen pixels of block4 are clipped."""
+        g = make_game(level=4)
+        g.pegs = [[4], [], []]
+        # scroll=1: peg0 at sc=1; block spans sc -2..4
+        # dc=-3 → sc=-2 (clipped, NOT wrapped), dc=-2 → sc=-1 (wrapped → col4)
+        g.scroll = 1.0
+        grid = render_frame(g, stick_on=False, held_on=False)
+        assert grid[3][4] == BRIGHTNESS_BLOCK, "(3,4) should be the sc=-1 wrap"
+        # sc=-2 must NOT appear at (3,3)
+        assert grid[3][3] == 0, "sc=-2 must be clipped, not wrapped" + grid_str(grid)
+
+
 def _solve_hanoi(game, n, src, dst, aux):
     """Recursive Tower of Hanoi solver using the game's action() interface."""
     if n == 0:
