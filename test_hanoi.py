@@ -655,19 +655,23 @@ class TestBlock4Wrap:
         assert grid[3][4] == BRIGHTNESS_BLOCK
         assert grid[3][0] == BRIGHTNESS_BLOCK
 
-    def test_block4_held_wraps_to_bottom_row(self):
-        """Held block 4 at row 0 has no row above; overflow wraps to row 4."""
+    def test_block4_held_forms_arch(self):
+        """Held block 4: 5 pixels on row 0, two downward bend pixels on row 1
+        forming a concave-down arch (∩) that hugs the top of the screen."""
         g = make_game(level=4)
         g.pegs = [[], [], []]
         g.held_block = 4
         g.held_from_peg = 0
         grid = render_frame(g, stick_on=False, held_on=True)
-        # Top row: centre 5 pixels lit
+        # Top row: all 5 centre pixels lit
         for sc in range(SCREEN_WIDTH):
             assert grid[HELD_ROW][sc] == BRIGHTNESS_HELD
-        # Bottom row: two wrap corners lit
-        assert grid[SCREEN_HEIGHT - 1][0] == BRIGHTNESS_HELD,  "right overflow → (4,0)"
-        assert grid[SCREEN_HEIGHT - 1][SCREEN_WIDTH - 1] == BRIGHTNESS_HELD, "left overflow → (4,4)"
+        # Row 1: left and right edge pixels bend down (forming the arch sides)
+        assert grid[HELD_ROW + 1][0] == BRIGHTNESS_HELD,              "left bend-down → (1,0)"
+        assert grid[HELD_ROW + 1][SCREEN_WIDTH - 1] == BRIGHTNESS_HELD, "right bend-down → (1,4)"
+        # Interior cells of row 1 must be empty
+        for sc in range(1, SCREEN_WIDTH - 1):
+            assert grid[HELD_ROW + 1][sc] == 0, f"unexpected pixel at (1,{sc})"
 
 
 # ---------------------------------------------------------------------------
@@ -718,19 +722,20 @@ class TestRenderHeld:
         for sc in range(5):
             assert grid[HELD_ROW][sc] == BRIGHTNESS_HELD
 
-    def test_held_block4_wraps_to_bottom_row(self):
-        """7-wide held block at row 0: centre 5 lit, overflow corners wrap to row 4."""
+    def test_held_block4_forms_concave_arch(self):
+        """7-wide held block at row 0: 5 pixels on the top row, two edge pixels
+        bend downward to row 1 forming a concave-down ∩ arch."""
         g = make_game(level=4)
-        g.pegs = [[], [], []]   # no placed blocks so wrap pixels are unobstructed
+        g.pegs = [[], [], []]   # no placed blocks so arch pixels are unobstructed
         g.held_block = 4
         g.held_from_peg = 0
         grid = render_frame(g, stick_on=False, held_on=True)
-        # Centre 5 pixels on top row
+        # Top row fully lit
         for sc in range(SCREEN_WIDTH):
             assert grid[HELD_ROW][sc] == BRIGHTNESS_HELD
-        # Two overflow corners on bottom row (the 'bend' for the held block)
-        assert grid[SCREEN_HEIGHT - 1][SCREEN_WIDTH - 1] == BRIGHTNESS_HELD
-        assert grid[SCREEN_HEIGHT - 1][0] == BRIGHTNESS_HELD
+        # Arch sides on row 1
+        assert grid[HELD_ROW + 1][0] == BRIGHTNESS_HELD
+        assert grid[HELD_ROW + 1][SCREEN_WIDTH - 1] == BRIGHTNESS_HELD
 
     def test_no_held_block_row0_empty(self):
         g = make_game(level=1, scroll=0.0)
@@ -933,22 +938,22 @@ class TestNoWrapArtifacts:
             assert grid[3][0] == 0, \
                 f"Sticky wrap pixel at (3,0) for scroll={s}" + grid_str(grid)
 
-    def test_held_block4_bend_around_regression(self):
-        """Regression: held block 4 showed flat 5 dots with no indication of its
-        7-pixel width.  After the fix the two overflow pixels wrap to the bottom row,
-        mirroring the bend-around behaviour of a placed block 4."""
+    def test_held_block4_arch_regression(self):
+        """Regression: held block 4 must form a concave-down arch (∩) on the
+        top two rows, not a flat 5-dot line and not wrap to the bottom row."""
         g = make_game(level=4)
         g.pegs = [[], [], []]
         g.held_block = 4
         g.held_from_peg = 0
         grid = render_frame(g, stick_on=False, held_on=True)
-        # Top row: all 5 lit (centre 5 of the 7-wide block)
+        # Top row: all 5 lit
         assert all(grid[HELD_ROW][sc] == BRIGHTNESS_HELD for sc in range(SCREEN_WIDTH))
-        # Bottom-row corners: the two overflow pixels that bend around
-        assert grid[SCREEN_HEIGHT - 1][0] == BRIGHTNESS_HELD, \
-            "right overflow must wrap to bottom-left corner"
-        assert grid[SCREEN_HEIGHT - 1][SCREEN_WIDTH - 1] == BRIGHTNESS_HELD, \
-            "left overflow must wrap to bottom-right corner"
+        # Row 1: arch sides at left and right columns
+        assert grid[HELD_ROW + 1][0] == BRIGHTNESS_HELD, "left arch side at (1,0)"
+        assert grid[HELD_ROW + 1][SCREEN_WIDTH - 1] == BRIGHTNESS_HELD, "right arch side at (1,4)"
+        # Bottom row must be clean (old wrong behaviour placed pixels there)
+        assert grid[SCREEN_HEIGHT - 1][0] == 0, "no pixel at bottom-left (old wrong wrap)"
+        assert grid[SCREEN_HEIGHT - 1][SCREEN_WIDTH - 1] == 0, "no pixel at bottom-right"
 
 
 def _solve_hanoi(game, n, src, dst, aux):

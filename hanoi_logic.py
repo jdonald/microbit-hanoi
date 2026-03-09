@@ -243,9 +243,11 @@ def _draw_screen_block(grid, block_num, row, centre_sc, brightness):
     """Draw a block in screen coordinates.
 
     For block 4 (7 LEDs wide) the two pixels that overflow the screen edges
-    by exactly 1 step wrap to the adjacent row: row - 1 for rows 1-4, or
-    the bottom row (SCREEN_HEIGHT - 1) when the block is at row 0 (held).
-    This gives the held block 4 the same 'bend around' visual as a placed one.
+    wrap downward to row + 1, forming a concave-down arch (∩) that hugs the
+    top of the display when the block is held at row 0:
+
+        Row 0:  * * * * *   (5 centre pixels)
+        Row 1:  *       *   (left and right bend-down pixels)
     """
     if not (1 <= block_num <= 4):
         return
@@ -255,8 +257,7 @@ def _draw_screen_block(grid, block_num, row, centre_sc, brightness):
         if 0 <= sc < SCREEN_WIDTH:
             _set_pixel(grid, row, sc, brightness)
         elif block_num == 4:
-            wrap_row = (row - 1) if row > 0 else (SCREEN_HEIGHT - 1)
             if sc == -1:
-                _set_pixel(grid, wrap_row, SCREEN_WIDTH - 1, brightness)   # → col 4
+                _set_pixel(grid, row + 1, 0, brightness)                    # → col 0, row below
             elif sc == SCREEN_WIDTH:
-                _set_pixel(grid, wrap_row, 0, brightness)                   # → col 0
+                _set_pixel(grid, row + 1, SCREEN_WIDTH - 1, brightness)    # → col 4, row below
